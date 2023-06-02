@@ -1,51 +1,65 @@
+require('dotenv').config();
+
 var express = require('express');
 const natural = require('natural');
-const fs = require('fs');
-const path = require('path');
 const cors = require('cors');
+const { Configuration, OpenAIApi } = require("openai");
+const makeRequestQuestion = require('./askGpt.js');
 
 var port = process.env.PORT || 3000;
 var app = express();
+const configuration = new Configuration({
+    apiKey: process.env['API_KEY'],
+});
+const openai = new OpenAIApi(configuration);
 
 app.use(express.json());
 app.use(cors());
 
-
-app.post('/getAnswer', function (req, res) {
-    console.log(req.body);
-    res.send('Hello World!');
+app.post('/getAnswer', async function (req, res) {
+    const { BDContent, Question } = req.body;
+    const relevantContext = findMostRelevantContext(Question, BDContent);
+    console.log(Question, relevantContext.context);
+    var result = await makeRequestQuestion(relevantContext.content, Question, openai);
+    res.send({ result: result, context: relevantContext.context});
 });
 
-function createTfidf(dir) {
-  const tfidf = new natural.TfIdf();
-  const files = fs.readdirSync(dir);
+function createTfidf(contexts) {
+    const tfidf = new natural.TfIdf();
 
-  files.forEach((file) => {
-    const data = fs.readFileSync(path.join(dir, file), 'utf-8');
-    tfidf.addDocument(data, file);
-  });
+    contexts.forEach((context, index) => {
+        tfidf.addDocument(context, index.toString());
+    });
 
-  return { tfidf, files };
+    return { tfidf, contexts };
 }
 
 function findMostRelevant(tfidfData, sentence) {
-  const items = [];
-  tfidfData.tfidf.tfidfs(sentence, function(i, measure) {
-    items.push({
-      file: tfidfData.files[i],
-      relevance: measure
+    const items = [];
+    tfidfData.tfidf.tfidfs(sentence, function(i, measure) {
+        items.push({
+            context: tfidfData.contexts[i],
+            relevance: measure
+        });
     });
-  });
 
-  items.sort((a, b) => b.relevance - a.relevance);
+    items.sort((a, b) => b.relevance - a.relevance);
 
-  return items.length > 0 ? items[0].file : null;
+    return items.length > 0 ? items[0] : null;
+}
+
+function findMostRelevantContext(question, bdContent) {
+    const tfidfData = createTfidf(bdContent.Context);
+    const mostRelevant = findMostRelevant(tfidfData, question);
+    const mostRelevantContextIndex = bdContent.Context.findIndex(context => context === mostRelevant.context);
+    const mostRelevantContent = bdContent.Content[mostRelevantContextIndex];
+
+    return {
+        context: mostRelevant.context,
+        content: mostRelevantContent
+    };
 }
 
 app.listen(port, function () {
     console.log('App listening on port ' + port);
 });
-
-// Call these functions like this:
-// const tfidfData = createTfidf('./contexts'); // Replace './context' with your directory if it's different
-// console.log(findMostRelevant(tfidfData, 'your input sentence here')); // Replace with your sentence
